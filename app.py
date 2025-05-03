@@ -3,6 +3,7 @@ from script_france_travail import get_france_travail_jobs
 import os
 
 app = Flask(__name__)
+CORS(app)  # <-- Enable CORS for all routes
 
 @app.route("/jobs", methods=["GET"])
 def jobs():
