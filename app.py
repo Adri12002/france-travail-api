@@ -1,4 +1,5 @@
 from flask import Flask, request, jsonify
+from flask_cors import CORS  # <-- Add this import
 from script_france_travail import get_france_travail_jobs
 import os
 
