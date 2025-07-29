@@ -98,7 +98,7 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
     search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     all_offers = []
     range_start = 0
-    range_size = 100
+    range_size = 5000
 
     while True:
         params = {
