@@ -9,7 +9,7 @@ from shapely.geometry import shape, Point
 app = Flask(__name__)
 CORS(app)
 
-# Chargement des départements une seule fois
+# Chargement unique des départements
 with open("departements.geojson", encoding="utf-8") as f:
     DEPARTEMENTS = json.load(f)
 
@@ -47,9 +47,7 @@ def format_salary(salary_info):
         return "Non précisé"
     libelle = salary_info.get('libelle', '')
     complement = salary_info.get('complement1', '')
-    if libelle and complement:
-        return f"{libelle} ({complement})"
-    return libelle or complement or "Non précisé"
+    return f"{libelle} ({complement})" if libelle and complement else libelle or complement or "Non précisé"
 
 def clean_description(desc):
     if not desc:
@@ -59,11 +57,18 @@ def clean_description(desc):
 
 def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, max_results=100):
     print("🔐 Authentification à France Travail...")
+
     auth_url = "https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire"
     client_id = os.environ.get("FT_CLIENT_ID")
     client_secret = os.environ.get("FT_CLIENT_SECRET")
     scope = 'api_offresdemploiv2 o2dsoffre'
-    auth_payload = f'grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}'
+
+    auth_payload = {
+        'grant_type': 'client_credentials',
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'scope': scope
+    }
     auth_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
 
     try:
@@ -71,8 +76,10 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
         print("✅ Authentification status :", auth_response.status_code)
         auth_response.raise_for_status()
         access_token = auth_response.json().get('access_token')
+        print("🔓 Token reçu :", access_token[:20], "...")
     except Exception as e:
         print("❌ Erreur auth France Travail :", e)
+        print("📄 Détail brut auth :", auth_response.text if 'auth_response' in locals() else 'Pas de réponse')
         return []
 
     headers = {
@@ -105,13 +112,17 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
             data = response.json()
             offers = data.get('resultats', [])
             print(f"🧾 Offres reçues dans ce batch : {len(offers)}")
+
             if not offers:
                 break
             all_offers.extend(offers)
             range_start += range_size
+
             if len(offers) < range_size or len(all_offers) >= max_results:
                 break
+
             time.sleep(0.5)
+
         except Exception as e:
             print("❌ Erreur récupération FT :", e)
             break
