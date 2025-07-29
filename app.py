@@ -10,7 +10,7 @@ app = Flask(__name__)
 CORS(app)
 
 # --- Carte départements (à charger une seule fois) ---
-with open("departements-version-simplifiee.geojson", encoding="utf-8") as f:
+with open("departements.geojson", encoding="utf-8") as f:
     departements_geojson = json.load(f)
 
 departements_shapes = [
