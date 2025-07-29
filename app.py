@@ -98,7 +98,7 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
     search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     all_offers = []
     range_start = 0
-    range_size = 5000
+    range_size = 100
 
     while True:
         params = {
@@ -161,7 +161,7 @@ async def search_jobs(request: JobRequest):
         keyword=keyword,
         region_codes=region_codes,
         type_contrat=type_contrat,
-        max_results=150
+        max_results=750
     )
 
     if polygon:
