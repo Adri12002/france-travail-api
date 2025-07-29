@@ -1,38 +1,34 @@
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Optional, Dict, Any
+import requests
+import os
+import time
+import json
 from shapely.geometry import shape, Point
-import requests, time, os, json, logging
+from typing import Optional, List
 
-# Configuration du logger
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("habita-api")
-
-# Création de l'application FastAPI
 app = FastAPI()
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Chargement des départements une seule fois
+# Chargement unique des départements
 with open("departements.geojson", encoding="utf-8") as f:
     DEPARTEMENTS = json.load(f)
 
-# Modèles Pydantic pour la requête entrante
-class Filters(BaseModel):
+class FilterModel(BaseModel):
     contrat: Optional[str] = None
 
-class JobSearchRequest(BaseModel):
-    keyword: str
-    filters: Optional[Filters] = Filters()
-    polygon: Optional[Dict[str, Any]] = None
+class JobRequest(BaseModel):
+    keyword: Optional[str]
+    filters: Optional[FilterModel] = FilterModel()
+    polygon: Optional[dict] = None
 
-# Fonctions utilitaires
 def get_departements_from_polygon(geojson_polygon):
     polygon = shape(geojson_polygon)
     codes = []
@@ -73,27 +69,33 @@ def clean_description(desc):
     desc = desc.replace('<br />', '\n').replace('<p>', '\n').replace('</p>', '')
     return ' '.join(desc.split())
 
-def get_token():
+def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, max_results=100):
     auth_url = "https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire"
     client_id = "PAR_parisgo_439eedf0b21525284ed72cdd929becd8cc636adfeb3237bfb4602a885fdf89d5"
     client_secret = "4b5fd0f864dbc704487d192d3b8e43a57a2a263df8ea4d07369ab6b8690240d7"
     scope = 'api_offresdemploiv2 o2dsoffre'
-    auth_payload = f'grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}'
-    headers = {'Content-Type': 'application/x-www-form-urlencoded'}
+    auth_payload = {
+        'grant_type': 'client_credentials',
+        'client_id': client_id,
+        'client_secret': client_secret,
+        'scope': scope
+    }
+    auth_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
 
-    response = requests.post(auth_url, headers=headers, data=auth_payload)
-    if response.status_code != 200:
-        logger.error("Erreur d'authentification FT : %s", response.text)
-        return None
-    return response.json().get('access_token')
+    try:
+        auth_response = requests.post(auth_url, headers=auth_headers, data=auth_payload)
+        auth_response.raise_for_status()
+        access_token = auth_response.json().get('access_token')
+    except:
+        return []
 
-def fetch_offers(token, region_codes, keyword, type_contrat, max_results=150):
     headers = {
-        'Authorization': f'Bearer {token}',
+        'Authorization': f'Bearer {access_token}',
         'Accept': 'application/json',
         'User-Agent': 'HabitaBot/1.0'
     }
-    url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
+
+    search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     all_offers = []
     range_start = 0
     range_size = 100
@@ -107,47 +109,29 @@ def fetch_offers(token, region_codes, keyword, type_contrat, max_results=150):
         if region_codes:
             params['departement'] = ','.join(region_codes)
 
-        response = requests.get(url, headers=headers, params=params)
-        if response.status_code != 200:
-            logger.warning("Erreur FT status %s : %s", response.status_code, response.text)
+        try:
+            response = requests.get(search_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            offers = data.get('resultats', [])
+            if not offers:
+                break
+            all_offers.extend(offers)
+            range_start += range_size
+            if len(offers) < range_size or len(all_offers) >= max_results:
+                break
+            time.sleep(0.5)
+        except:
             break
-        data = response.json()
-        offers = data.get('resultats', [])
-        if not offers:
-            break
-        all_offers.extend(offers)
-        range_start += range_size
-        if len(offers) < range_size or len(all_offers) >= max_results:
-            break
-        time.sleep(0.5)
 
-    return all_offers[:max_results]
-
-# Route principale
-@app.post("/api/jobs")
-async def search_jobs(payload: JobSearchRequest):
-    keyword = payload.keyword
-    type_contrat = payload.filters.contrat if payload.filters else None
-    region_codes = get_departements_from_polygon(payload.polygon) if payload.polygon else None
-
-    token = get_token()
-    if not token:
-        return {"jobs": []}
-
-    offers = fetch_offers(token, region_codes, keyword, type_contrat)
-
-    # Format final
-    jobs = []
-    poly = shape(payload.polygon) if payload.polygon else None
-    for i, offer in enumerate(offers, 1):
+    formatted = []
+    for i, offer in enumerate(all_offers[:max_results], 1):
         lat = offer.get('lieuTravail', {}).get('latitude')
         lon = offer.get('lieuTravail', {}).get('longitude')
         if not lat or not lon:
             continue
-        if poly and not poly.contains(Point(lon, lat)):
-            continue
 
-        jobs.append({
+        formatted.append({
             "id": f"job{i}",
             "title": offer.get('intitule', ''),
             "company": offer.get('entreprise', {}).get('nom', '').strip(),
@@ -163,5 +147,25 @@ async def search_jobs(payload: JobSearchRequest):
             "url": offer.get('origineOffre', {}).get('url', '')
         })
 
-    logger.info("✅ %d offres envoyées", len(jobs))
+    return formatted
+
+@app.post("/api/jobs")
+async def search_jobs(request: JobRequest):
+    keyword = request.keyword
+    filters = request.filters or {}
+    polygon = request.polygon
+    type_contrat = filters.contrat if filters else None
+
+    region_codes = get_departements_from_polygon(polygon) if polygon else None
+    jobs = get_france_travail_jobs(
+        keyword=keyword,
+        region_codes=region_codes,
+        type_contrat=type_contrat,
+        max_results=150
+    )
+
+    if polygon:
+        poly = shape(polygon)
+        jobs = [job for job in jobs if poly.contains(Point(job["lng"], job["lat"]))]
+
     return {"jobs": jobs}
