@@ -4,23 +4,25 @@ import requests
 import time
 import os
 import json
-import shapely.geometry
-from shapely.geometry import shape, Point, Polygon
+from shapely.geometry import shape, Point
 
 app = Flask(__name__)
 CORS(app)
 
-# Charger les départements une seule fois au démarrage
+# Chargement des départements une seule fois
 with open("departements.geojson", encoding="utf-8") as f:
     DEPARTEMENTS = json.load(f)
 
 def get_departements_from_polygon(geojson_polygon):
+    print("📍 Conversion du polygone en départements...")
     polygon = shape(geojson_polygon)
     codes = []
     for feature in DEPARTEMENTS["features"]:
         dept_shape = shape(feature["geometry"])
         if polygon.intersects(dept_shape):
-            codes.append(feature["properties"]["code"])
+            code = feature["properties"]["code"]
+            codes.append(code)
+            print(f"✅ Département détecté : {code}")
     return codes
 
 def clean_company_name(company_name):
@@ -56,6 +58,7 @@ def clean_description(desc):
     return ' '.join(desc.split())
 
 def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, max_results=100):
+    print("🔐 Authentification à France Travail...")
     auth_url = "https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire"
     client_id = os.environ.get("FT_CLIENT_ID")
     client_secret = os.environ.get("FT_CLIENT_SECRET")
@@ -65,19 +68,20 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
 
     try:
         auth_response = requests.post(auth_url, headers=auth_headers, data=auth_payload)
+        print("✅ Authentification status :", auth_response.status_code)
         auth_response.raise_for_status()
         access_token = auth_response.json().get('access_token')
     except Exception as e:
-        print(f"Erreur d'authentification France Travail : {e}")
+        print("❌ Erreur auth France Travail :", e)
         return []
 
-    search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Accept': 'application/json',
         'User-Agent': 'HabitaBot/1.0'
     }
 
+    search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     all_offers = []
     range_start = 0
     range_size = 100
@@ -91,11 +95,16 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
         if region_codes:
             params['departement'] = ','.join(region_codes)
 
+        print("📤 Requête à France Travail :", params)
+
         try:
             response = requests.get(search_url, headers=headers, params=params)
+            print("📡 Réponse France Travail :", response.status_code)
+            print("📄 Payload brut (limité) :", response.text[:300])
             response.raise_for_status()
             data = response.json()
             offers = data.get('resultats', [])
+            print(f"🧾 Offres reçues dans ce batch : {len(offers)}")
             if not offers:
                 break
             all_offers.extend(offers)
@@ -104,7 +113,7 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
                 break
             time.sleep(0.5)
         except Exception as e:
-            print(f"Erreur lors de la récupération des offres : {e}")
+            print("❌ Erreur récupération FT :", e)
             break
 
     formatted = []
@@ -130,18 +139,22 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
             "url": offer.get('origineOffre', {}).get('url', '')
         })
 
+    print(f"🎯 Total final d'offres formatées : {len(formatted)}")
     return formatted
 
 @app.route("/api/jobs", methods=["POST"])
 def search_jobs():
     try:
         data = request.get_json(force=True)
+        print("📥 Requête reçue :", json.dumps(data, indent=2))
+
         keyword = data.get("keyword")
         filters = data.get("filters", {})
         polygon = data.get("polygon")
-
         type_contrat = filters.get("contrat")
+
         region_codes = get_departements_from_polygon(polygon) if polygon else None
+        print("🗺️ Codes départements extraits :", region_codes)
 
         jobs = get_france_travail_jobs(
             keyword=keyword,
@@ -153,6 +166,7 @@ def search_jobs():
         if polygon:
             poly = shape(polygon)
             jobs = [job for job in jobs if poly.contains(Point(job["lng"], job["lat"]))]
+            print("📌 Offres après filtrage dans le polygone :", len(jobs))
 
         return jsonify({"jobs": jobs}), 200
 
@@ -162,4 +176,5 @@ def search_jobs():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    print(f"🚀 Backend lancé sur http://localhost:{port}")
     app.run(host="0.0.0.0", port=port)
