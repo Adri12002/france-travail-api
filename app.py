@@ -59,8 +59,8 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
     print("🔐 Authentification à France Travail...")
 
     auth_url = "https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire"
-    client_id = os.environ.get("FT_CLIENT_ID")
-    client_secret = os.environ.get("FT_CLIENT_SECRET")
+    client_id = "PAR_parisgo_439eedf0b21525284ed72cdd929becd8cc636adfeb3237bfb4602a885fdf89d5"
+    client_secret = "4b5fd0f864dbc704487d192d3b8e43a57a2a263df8ea4d07369ab6b8690240d7"
     scope = 'api_offresdemploiv2 o2dsoffre'
 
     auth_payload = {
