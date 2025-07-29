@@ -1,40 +1,31 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 import requests
-import os
 import time
-from shapely.geometry import shape, Point, Polygon
+import os
 import json
+import shapely.geometry
+from shapely.geometry import shape, Point, Polygon
 
 app = Flask(__name__)
 CORS(app)
 
-# --- Carte départements (à charger une seule fois) ---
+# Charger les départements une seule fois au démarrage
 with open("departements.geojson", encoding="utf-8") as f:
-    departements_geojson = json.load(f)
+    DEPARTEMENTS = json.load(f)
 
-departements_shapes = [
-    {
-        "code": feature["properties"]["code"],
-        "nom": feature["properties"]["nom"],
-        "geometry": shape(feature["geometry"])
-    }
-    for feature in departements_geojson["features"]
-]
+def get_departements_from_polygon(geojson_polygon):
+    polygon = shape(geojson_polygon)
+    codes = []
+    for feature in DEPARTEMENTS["features"]:
+        dept_shape = shape(feature["geometry"])
+        if polygon.intersects(dept_shape):
+            codes.append(feature["properties"]["code"])
+    return codes
 
-# --- Fonctions utilitaires ---
 def clean_company_name(company_name):
     if not company_name:
         return ""
-    replacements = {
-        "BNP Paribas": "bnpparibas",
-        "L'Oréal": "loreal",
-        "Société Générale": "societegenerale",
-        "France Travail": "pole-emploi"
-    }
-    for original, replacement in replacements.items():
-        if original.lower() in company_name.lower():
-            return replacement
     clean_name = company_name.split('(')[0].split('-')[0].split('/')[0].strip()
     clean_name = ''.join(e for e in clean_name if e.isalnum() or e.isspace())
     return clean_name.split()[0].lower() if clean_name else ""
@@ -44,44 +35,43 @@ def get_clearbit_logo(company_name):
         return ""
     logo_url = f"https://logo.clearbit.com/{company_name}.com?size=150"
     try:
-        r = requests.head(logo_url, timeout=2)
-        return logo_url if r.status_code == 200 else ""
+        response = requests.head(logo_url, timeout=2)
+        return logo_url if response.status_code == 200 else ""
     except:
         return ""
 
-def format_salary(sal):
-    if not sal: return "Non précisé"
-    return f"{sal.get('libelle', '')} ({sal.get('complement1', '')})".strip()
+def format_salary(salary_info):
+    if not salary_info:
+        return "Non précisé"
+    libelle = salary_info.get('libelle', '')
+    complement = salary_info.get('complement1', '')
+    if libelle and complement:
+        return f"{libelle} ({complement})"
+    return libelle or complement or "Non précisé"
 
 def clean_description(desc):
-    if not desc: return ""
-    return ' '.join(desc.replace('<br />', '\n').replace('<p>', '\n').replace('</p>', '').split())
+    if not desc:
+        return ""
+    desc = desc.replace('<br />', '\n').replace('<p>', '\n').replace('</p>', '')
+    return ' '.join(desc.split())
 
-# --- Conversion polygone → départements ---
-def get_departements_from_polygon(isochrone_polygon_coords):
-    polygon = Polygon(isochrone_polygon_coords[0])  # premier anneau = surface principale
-    codes = [d["code"] for d in departements_shapes if d["geometry"].intersects(polygon)]
-    return list(set(codes))
-
-# --- Requête à France Travail ---
 def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, max_results=100):
-    # Authentification
     auth_url = "https://entreprise.francetravail.fr/connexion/oauth2/access_token?realm=%2Fpartenaire"
-    client_id = 'PAR_parisgo_02ee6a6b30b8ee2045ade6e947fb9e8b91703dcb90afcc760e78a4a9aa1c1edd'
-    client_secret = 'f019350d3fd8f7000df4a0c82817536bdad198ea518bf164fb2787dffe4dd9df'
+    client_id = os.environ.get("FT_CLIENT_ID")
+    client_secret = os.environ.get("FT_CLIENT_SECRET")
     scope = 'api_offresdemploiv2 o2dsoffre'
-    payload = f'grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}'
-    headers_auth = {'Content-Type': 'application/x-www-form-urlencoded'}
+    auth_payload = f'grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope={scope}'
+    auth_headers = {'Content-Type': 'application/x-www-form-urlencoded'}
 
     try:
-        r = requests.post(auth_url, headers=headers_auth, data=payload)
-        r.raise_for_status()
-        access_token = r.json().get("access_token")
+        auth_response = requests.post(auth_url, headers=auth_headers, data=auth_payload)
+        auth_response.raise_for_status()
+        access_token = auth_response.json().get('access_token')
     except Exception as e:
-        print("❌ Auth error:", e)
+        print(f"Erreur d'authentification France Travail : {e}")
         return []
 
-    # Requête offres
+    search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
     headers = {
         'Authorization': f'Bearer {access_token}',
         'Accept': 'application/json',
@@ -99,75 +89,77 @@ def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, 
             'typeContrat': type_contrat
         }
         if region_codes:
-            params['departement'] = region_codes
+            params['departement'] = ','.join(region_codes)
 
         try:
-            r = requests.get("https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search", headers=headers, params=params)
-            r.raise_for_status()
-            results = r.json().get('resultats', [])
-            if not results: break
-            all_offers += results
-            if len(results) < range_size or len(all_offers) >= max_results: break
+            response = requests.get(search_url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            offers = data.get('resultats', [])
+            if not offers:
+                break
+            all_offers.extend(offers)
             range_start += range_size
-            time.sleep(0.3)
+            if len(offers) < range_size or len(all_offers) >= max_results:
+                break
+            time.sleep(0.5)
         except Exception as e:
-            print("❌ Fetch error:", e)
+            print(f"Erreur lors de la récupération des offres : {e}")
             break
 
-    # Formatage
     formatted = []
-    for i, o in enumerate(all_offers[:max_results]):
-        comp = o.get('entreprise', {}).get('nom', '').strip()
-        logo = get_clearbit_logo(clean_company_name(comp)) if comp else ""
+    for i, offer in enumerate(all_offers[:max_results], 1):
+        lat = offer.get('lieuTravail', {}).get('latitude')
+        lon = offer.get('lieuTravail', {}).get('longitude')
+        if not lat or not lon:
+            continue
+
         formatted.append({
             "id": f"job{i}",
-            "title": o.get("intitule", ""),
-            "company": comp,
+            "title": offer.get('intitule', ''),
+            "company": offer.get('entreprise', {}).get('nom', '').strip(),
             "position": "Full-time",
-            "salary": format_salary(o.get("salaire")),
-            "lat": o.get('lieuTravail', {}).get('latitude'),
-            "lng": o.get('lieuTravail', {}).get('longitude'),
-            "address": o.get('lieuTravail', {}).get('libelle', ''),
-            "type": o.get('typeContrat', ''),
-            "description": clean_description(o.get('description', '')),
-            "imageUrl": logo,
-            "suburb": o.get('lieuTravail', {}).get('commune', ''),
-            "url": o.get('origineOffre', {}).get('url', '')
+            "salary": format_salary(offer.get('salaire', {})),
+            "lat": lat,
+            "lng": lon,
+            "address": offer.get('lieuTravail', {}).get('libelle', ''),
+            "type": offer.get('typeContrat', ''),
+            "description": clean_description(offer.get('description', '')),
+            "imageUrl": get_clearbit_logo(clean_company_name(offer.get('entreprise', {}).get('nom', ''))),
+            "suburb": offer.get('lieuTravail', {}).get('commune', ''),
+            "url": offer.get('origineOffre', {}).get('url', '')
         })
 
     return formatted
 
-# --- Route POST ---
 @app.route("/api/jobs", methods=["POST"])
 def search_jobs():
     try:
         data = request.get_json(force=True)
         keyword = data.get("keyword")
         filters = data.get("filters", {})
-        iso_coords = data.get("isochrone_polygon")  # [[ [lng, lat], [lng, lat], ... ]]
+        polygon = data.get("polygon")
 
-        if not iso_coords or not isinstance(iso_coords, list):
-            return jsonify({"error": "Polygone isochrone invalide"}), 400
-
-        departements = get_departements_from_polygon(iso_coords)
-        if not departements:
-            return jsonify({"jobs": []}), 200
+        type_contrat = filters.get("contrat")
+        region_codes = get_departements_from_polygon(polygon) if polygon else None
 
         jobs = get_france_travail_jobs(
-            region_codes=departements,
             keyword=keyword,
-            type_contrat=filters.get("contrat"),
-            max_results=100
+            region_codes=region_codes,
+            type_contrat=type_contrat,
+            max_results=150
         )
 
-        # Filtrer localement avec turf.js côté front si nécessaire
+        if polygon:
+            poly = shape(polygon)
+            jobs = [job for job in jobs if poly.contains(Point(job["lng"], job["lat"]))]
+
         return jsonify({"jobs": jobs}), 200
 
     except Exception as e:
-        print("❌ Erreur backend:", e)
-        return jsonify({"error": str(e)}), 500
+        print("❌ Erreur backend :", str(e))
+        return jsonify({"error": "Erreur interne du serveur"}), 500
 
-# --- Dev ---
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
