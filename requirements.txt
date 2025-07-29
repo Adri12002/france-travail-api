@@ -1,5 +1,4 @@
-flask
+fastapi
+uvicorn[standard]
 requests
-flask-cors
 shapely
-gunicorn
