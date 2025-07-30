@@ -140,7 +140,8 @@ async def get_france_travail_jobs(region_codes=None, filters=None, max_results=8
     ]
     results = await asyncio.gather(*tasks)
     all_offers = [offer for batch in results for offer in batch]
-    # Déduplication par URL d'origine ou id    jobs = []
+    # Déduplication par URL d'origine ou id    
+    jobs = []
     for i, offer in enumerate(all_offers[:max_results], 1):
         lat = offer.get('lieuTravail', {}).get('latitude')
         lon = offer.get('lieuTravail', {}).get('longitude')
