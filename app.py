@@ -22,11 +22,19 @@ with open("departements.geojson", encoding="utf-8") as f:
     DEPARTEMENTS = json.load(f)
 
 class FilterModel(BaseModel):
-    contrat: Optional[str] = None
+    motsCles: Optional[str] = None
+    typeContrat: Optional[str] = None
+    secteurActivite: Optional[str] = None
+    salaireMin: Optional[str] = None
+    experience: Optional[str] = None
+    niveauFormation: Optional[str] = None
+    accesTravailleurHandicape: Optional[bool] = None
+    employeursHandiEngages: Optional[bool] = None
+    entreprisesAdaptees: Optional[bool] = None
+    # Ajoute ici tous tes autres filtres avancés France Travail si besoin
 
 class JobRequest(BaseModel):
-    keyword: Optional[str]
-    filters: Optional[FilterModel] = FilterModel()
+    filters: Optional[Dict[str, Any]] = None
     polygon: Optional[dict] = None
 
 def get_departements_from_polygon(geojson_polygon):
@@ -85,10 +93,9 @@ async def get_access_token():
     return access_token
 
 async def fetch_department_jobs(
-    dept_code: str, 
-    access_token: str, 
-    keyword: Optional[str], 
-    type_contrat: Optional[str], 
+    dept_code: str,
+    access_token: str,
+    filters: dict,
     per_dept_max: int = 200
 ) -> List[Dict[str, Any]]:
     search_url = "https://api.francetravail.io/partenaire/offresdemploi/v2/offres/search"
@@ -102,12 +109,10 @@ async def fetch_department_jobs(
     offers = []
     async with httpx.AsyncClient(timeout=20) as client:
         while True:
-            params = {
-                'range': f'{range_start}-{range_start + range_size - 1}',
-                'motsCles': keyword,
-                'typeContrat': type_contrat,
-                'departement': dept_code
-            }
+            params = {k: v for k, v in filters.items() if v not in (None, "", [])}
+            params['range'] = f'{range_start}-{range_start + range_size - 1}'
+            params['departement'] = dept_code  # on force le département courant ici
+
             r = await client.get(search_url, headers=headers, params=params)
             r.raise_for_status()
             data = r.json()
@@ -118,35 +123,25 @@ async def fetch_department_jobs(
             if len(batch) < range_size or len(offers) >= per_dept_max:
                 break
             range_start += range_size
-            await asyncio.sleep(0.2)  # pour éviter le flood de l'API
+            await asyncio.sleep(0.2)
     return offers[:per_dept_max]
 
-async def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=None, max_results=800):
+async def get_france_travail_jobs(region_codes=None, filters=None, max_results=800):
     access_token = await get_access_token()
-    # si pas de région = tout france (rare et très lent)
+        # si pas de région = tout france (rare et très lent)
+
     if not region_codes:
         region_codes = [None]
+            # Lancer toutes les requêtes de département en parallèle
 
-    # Lancer toutes les requêtes de département en parallèle
     tasks = [
-        fetch_department_jobs(dept, access_token, keyword, type_contrat, per_dept_max=250)
+        fetch_department_jobs(dept, access_token, filters or {}, per_dept_max=250)
         for dept in region_codes
     ]
     results = await asyncio.gather(*tasks)
     all_offers = [offer for batch in results for offer in batch]
-
-    # Déduplication par URL d'origine ou id
-    seen = set()
-    deduped = []
-    for offer in all_offers:
-        url = offer.get('origineOffre', {}).get('url') or offer.get('id')
-        if url and url not in seen:
-            seen.add(url)
-            deduped.append(offer)
-
-    # Format final
-    jobs = []
-    for i, offer in enumerate(deduped[:max_results], 1):
+    # Déduplication par URL d'origine ou id    jobs = []
+    for i, offer in enumerate(all_offers[:max_results], 1):
         lat = offer.get('lieuTravail', {}).get('latitude')
         lon = offer.get('lieuTravail', {}).get('longitude')
         if not lat or not lon:
@@ -170,19 +165,20 @@ async def get_france_travail_jobs(region_codes=None, keyword=None, type_contrat=
 
 @app.post("/api/jobs")
 async def search_jobs(request: JobRequest):
-    keyword = request.keyword
     filters = request.filters or {}
     polygon = request.polygon
-    type_contrat = filters.contrat if filters else None
 
+    # (Supposons que tu as déjà une fonction get_departements_from_polygon)
     region_codes = get_departements_from_polygon(polygon) if polygon else None
+
+    # Appel principal
     jobs = await get_france_travail_jobs(
-        keyword=keyword,
+        filters=filters,
         region_codes=region_codes,
-        type_contrat=type_contrat,
         max_results=900
     )
 
+    # Filtrage spatial final
     if polygon:
         poly = shape(polygon)
         jobs = [job for job in jobs if poly.contains(Point(job["lng"], job["lat"]))]
