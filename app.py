@@ -112,6 +112,7 @@ async def fetch_department_jobs(
             params = {k: v for k, v in filters.items() if v not in (None, "", [])}
             params['range'] = f'{range_start}-{range_start + range_size - 1}'
             params['departement'] = dept_code  # on force le département courant ici
+            print("Params API FT =>", params)
 
             r = await client.get(search_url, headers=headers, params=params)
             r.raise_for_status()
