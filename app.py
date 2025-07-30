@@ -161,9 +161,25 @@ async def get_france_travail_jobs(region_codes=None, filters=None, max_results=8
             "description": clean_description(offer.get('description', '')),
             "imageUrl": get_clearbit_logo(clean_company_name(offer.get('entreprise', {}).get('nom', ''))),
             "suburb": offer.get('lieuTravail', {}).get('commune', ''),
-            "url": offer.get('origineOffre', {}).get('url', '')
+            "url": get_postulation_url(offer),
         })
     return jobs
+
+def get_postulation_url(offer):
+    # Prend d'abord le vrai lien partenaire si dispo
+    url = offer.get('origineOffre', {}).get('url')
+    # Prend le lien contact urlPostulation si dispo (France Travail le fournit parfois)
+    if not url:
+        contact = offer.get('contact', {})
+        url_post = contact.get('urlPostulation') or contact.get('courriel')
+        if url_post and url_post.startswith("http"):
+            url = url_post
+    # Fallback vers la fiche FT si toujours rien
+    if not url:
+        # lien par défaut vers FT
+        id_ft = offer.get('id')
+        url = f"https://candidat.francetravail.fr/offres/recherche/detail/{id_ft}" if id_ft else ""
+    return url
 
 @app.post("/api/jobs")
 async def search_jobs(request: JobRequest):
